@@ -1,0 +1,1384 @@
+package cargo.cms.auth.model;
+
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+
+import jakarta.annotation.Nullable;
+import java.util.Collection;
+import java.util.Set;
+import lombok.*;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+
+@JsonDeserialize
+@Data
+@AllArgsConstructor
+@Builder
+public class AuthUserDetails implements UserDetails {
+
+  private static final long serialVersionUID = 1L;
+
+  @Getter(AccessLevel.NONE)
+  private final String password;
+
+  private final String username;
+  private final Set<GrantedAuthority> authorities;
+  private final boolean accountNonExpired;
+  private final boolean accountNonLocked;
+  private final boolean credentialsNonExpired;
+  private final boolean enabled;
+
+  private final String userType;
+  private final String carrierCode;
+  private final String companyName;
+  private final Set<String> groupCarrierCodes;
+
+  @Override
+  public Collection<? extends GrantedAuthority> getAuthorities() {
+    return authorities;
+  }
+
+  @Override
+  public String getPassword() {
+    return this.password;
+  }
+
+  @Override
+  public String getUsername() {
+    return this.username;
+  }
+
+  @Override
+  public boolean isAccountNonExpired() {
+    return accountNonExpired;
+  }
+
+  @Override
+  public boolean isAccountNonLocked() {
+    return accountNonLocked;
+  }
+
+  @Override
+  public boolean isCredentialsNonExpired() {
+    return credentialsNonExpired;
+  }
+
+  @Override
+  public boolean isEnabled() {
+    return enabled;
+  }
+
+  public String getUserType() {
+    return this.userType;
+  }
+
+  @Nullable
+  public String getCarrierCode() {
+    return this.carrierCode;
+  }
+
+  @Nullable
+  public String getCompanyName() {
+    return this.companyName;
+  }
+
+  @Nullable
+  public Set<String> getGroupCarrierCodes() {
+    return this.groupCarrierCodes;
+  }
+}
+.................AuthUserDetails class
+
+package cargo.cms.auth.model;
+
+import java.util.Set;
+
+import lombok.Data;
+import org.springframework.security.core.GrantedAuthority;
+
+@Data
+public class AuthUserModel {
+
+  private String username;
+  private String password;
+
+  private Set<GrantedAuthority> authorities;
+  private boolean accountNonExpired;
+  private boolean accountNonLocked;
+  private boolean credentialsNonExpired;
+  private boolean enabled;
+
+  private String userType;
+  private String carrierCode;
+  private Set<String> groupCarrierCodes;
+  private String companyName;
+}
+...........AuthUserModel class
+
+package cargo.cms.auth.repository;
+
+import cargo.cms.auth.model.AuthUserModel;
+
+import cargo.cms.base.exception.BusinessException;
+import cargo.cms.base.repository.BaseRepository;
+import org.apache.ibatis.session.SqlSession;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public class AuthUserDetailsRepository extends BaseRepository {
+
+  public AuthUserDetailsRepository(SqlSession sqlSession) {
+    super(sqlSession, "cargo.cms.auth.mapper.AuthUserDetailsMapper");
+  }
+
+  public AuthUserModel loadUserByUsername(String username, String userType)
+    throws BusinessException {
+    return switch (userType) {
+      case "I" -> fetchObject("loadInternalUserByUsername", username);
+      case "H" -> fetchObject("loadHhtUserByUsername", username);
+      case "F" -> fetchObject("loadFmsUserByUsername", username);
+      case "E" -> fetchObject("loadExternalUserByUsername", username);
+      default -> null;
+    };
+  }
+}
+......................AuthUserDetailsRepository class
+
+package cargo.cms.auth.service;
+
+import cargo.cms.auth.model.AuthUserDetails;
+
+import cargo.cms.auth.model.AuthUserModel;
+import cargo.cms.auth.repository.AuthUserDetailsRepository;
+import cargo.cms.base.exception.BusinessException;
+import jakarta.servlet.http.HttpSession;
+import java.io.Serializable;
+import java.util.*;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.web.savedrequest.DefaultSavedRequest;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.ObjectUtils;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+@Service
+@Transactional(readOnly = true)
+@Slf4j
+public class AuthUserDetailsService implements UserDetailsService {
+
+  private static final String USER_NOT_FOUND_ERROR = "username.not.found";
+
+  private final AuthUserDetailsRepository authUserDetailsRepository;
+
+  public AuthUserDetailsService(
+    AuthUserDetailsRepository authUserDetailsRepository
+  ) {
+    this.authUserDetailsRepository = authUserDetailsRepository;
+  }
+
+  @Override
+  public UserDetails loadUserByUsername(String username)
+    throws UsernameNotFoundException {
+    try {
+      String clientId = getClientId();
+
+      if (Objects.isNull(clientId)) {
+        log.error("Invalid/Unkown client ID.");
+        throw new UsernameNotFoundException(USER_NOT_FOUND_ERROR);
+      }
+
+      String userType =
+        switch (clientId) {
+          case "webclient" -> "I";
+          case "mobileclient" -> "H";
+          case "fmsclient" -> "F";
+          case "customerwebclient" -> "E";
+          default -> null;
+        };
+
+      log.debug("Client ID: {}, User Type: {}", clientId, userType);
+
+      if (Objects.isNull(userType)) {
+        log.error("Invalid/Unknown user type.");
+        throw new UsernameNotFoundException(USER_NOT_FOUND_ERROR);
+      }
+
+      AuthUserModel user =
+        this.authUserDetailsRepository.loadUserByUsername(username, userType);
+      if (ObjectUtils.isEmpty(user)) {
+        throw new UsernameNotFoundException(USER_NOT_FOUND_ERROR);
+      }
+
+      SortedSet<GrantedAuthority> sortedAuthorities = new TreeSet<>(
+        new AuthorityComparator()
+      );
+
+      sortedAuthorities.addAll(Set.of(new SimpleGrantedAuthority("USER")));
+
+      if ("I".equalsIgnoreCase(user.getUserType())) {
+        sortedAuthorities.addAll(
+          Set.of(new SimpleGrantedAuthority("INTERNAL"))
+        );
+      } else if ("E".equalsIgnoreCase(user.getUserType())) {
+        sortedAuthorities.addAll(
+          Set.of(new SimpleGrantedAuthority("EXTERNAL"))
+        );
+      }
+
+      return AuthUserDetails.builder()
+        .username(user.getUsername())
+        .password(user.getPassword())
+        .enabled(user.isEnabled())
+        .credentialsNonExpired(user.isCredentialsNonExpired())
+        .accountNonLocked(user.isAccountNonLocked())
+        .accountNonExpired(user.isAccountNonExpired())
+        .authorities(Collections.unmodifiableSet(sortedAuthorities))
+        .userType(user.getUserType())
+        .carrierCode(user.getCarrierCode())
+        .companyName(user.getCompanyName())
+        .groupCarrierCodes(user.getGroupCarrierCodes())
+        .build();
+    } catch (BusinessException e) {
+      log.error("Error while fetching user details.", e);
+      throw new UsernameNotFoundException(USER_NOT_FOUND_ERROR);
+    }
+  }
+
+  private String getClientId() {
+    ServletRequestAttributes requestAttributes =
+      (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+
+    if (Objects.nonNull(requestAttributes)) {
+      HttpSession httpSession = requestAttributes.getRequest().getSession();
+      if (
+        Objects.nonNull(httpSession) &&
+        Objects.nonNull(
+          httpSession.getAttribute("SPRING_SECURITY_SAVED_REQUEST")
+        ) &&
+        httpSession.getAttribute("SPRING_SECURITY_SAVED_REQUEST") instanceof
+        DefaultSavedRequest defaultSavedRequest &&
+        !ObjectUtils.isEmpty(
+          defaultSavedRequest.getParameterValues("client_id")
+        )
+      ) {
+        return defaultSavedRequest.getParameterValues("client_id")[0];
+      }
+    }
+    return null;
+  }
+
+  private static class AuthorityComparator
+    implements Comparator<GrantedAuthority>, Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Override
+    public int compare(GrantedAuthority g1, GrantedAuthority g2) {
+      return g1.getAuthority().compareTo(g2.getAuthority());
+    }
+  }
+}
+.................AuthUserDetailsService class
+
+package cargo.cms.auth.controller;
+
+import org.springframework.stereotype.Controller;
+
+import org.springframework.web.bind.annotation.GetMapping;
+
+@Controller
+public class HomeController {
+
+  @GetMapping("/")
+  public String home() {
+    return "index";
+  }
+}
+..................HomeController class
+
+package cargo.cms.auth.controller;
+
+import jakarta.servlet.http.HttpSession;
+
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.GetMapping;
+
+@Controller
+public class LoginController {
+
+  @GetMapping("/login")
+  public String login(HttpSession httpSession) {
+    return "login";
+  }
+}
+................logincontroller class
+
+package cargo.cms.auth.config;
+
+import cargo.cms.security.CorsProperties;
+
+import cargo.cms.security.LegacyPasswordEncoder;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Consumer;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.MediaType;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.DelegatingPasswordEncoder;
+import org.springframework.security.crypto.password.NoOpPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
+import org.springframework.security.oauth2.server.authorization.authentication.*;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
+import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
+import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+@Configuration
+@EnableWebSecurity
+@EnableConfigurationProperties(CorsProperties.class)
+@Slf4j
+public class AuthServerSecurityConfig {
+
+  private final CorsProperties corsProperties;
+
+  public AuthServerSecurityConfig(CorsProperties corsProperties) {
+    this.corsProperties = corsProperties;
+  }
+
+  @Bean
+  @Order(1)
+  SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http)
+    throws Exception {
+    OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
+      OAuth2AuthorizationServerConfigurer.authorizationServer();
+
+    http
+      .securityMatcher(authorizationServerConfigurer.getEndpointsMatcher())
+      .with(authorizationServerConfigurer, authorizationServer ->
+        authorizationServer
+          .oidc(Customizer.withDefaults())
+          .authorizationEndpoint(authorizationEndpoint ->
+            authorizationEndpoint.authenticationProviders(
+              configureAuthenticationValidator()
+            )
+          )
+      )
+      .authorizeHttpRequests(authorizeHttpRequests ->
+        authorizeHttpRequests
+          .requestMatchers(EndpointRequest.toAnyEndpoint())
+          .permitAll()
+          .anyRequest()
+          .authenticated()
+      )
+      .exceptionHandling(exceptionHandling ->
+        exceptionHandling.defaultAuthenticationEntryPointFor(
+          new LoginUrlAuthenticationEntryPoint("/login"),
+          new MediaTypeRequestMatcher(MediaType.TEXT_HTML)
+        )
+      );
+
+    http.oauth2ResourceServer(oauth2ResourceServer ->
+      oauth2ResourceServer.jwt(Customizer.withDefaults())
+    );
+    http
+      .csrf(csrf ->
+        csrf
+          .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+          .csrfTokenRequestHandler(new SpaCsrfTokenRequestHandler())
+          .ignoringRequestMatchers("/actuator/**")
+      )
+      .addFilterAfter(new CsrfCookieFilter(), BasicAuthenticationFilter.class);
+    return http.cors(Customizer.withDefaults()).build();
+  }
+
+  @Bean
+  @Order(2)
+  SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http)
+    throws Exception {
+    http.authorizeHttpRequests(authorizeHttpRequests ->
+      authorizeHttpRequests
+        .requestMatchers("/*.ico", "/js/*.js", "/css/*.css", "/assets/**")
+        .permitAll()
+        .requestMatchers(EndpointRequest.toAnyEndpoint())
+        .permitAll()
+        .anyRequest()
+        .authenticated()
+    );
+    http
+      .csrf(csrf ->
+        csrf
+          .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+          .csrfTokenRequestHandler(new SpaCsrfTokenRequestHandler())
+          .ignoringRequestMatchers("/actuator/**")
+      )
+      .addFilterAfter(new CsrfCookieFilter(), BasicAuthenticationFilter.class);
+    http.formLogin(formLogin -> formLogin.loginPage("/login").permitAll());
+    return http.cors(Customizer.withDefaults()).build();
+  }
+
+  @Bean
+  PasswordEncoder delegatingPasswordEncoder() {
+    // NoOpPasswordEncoder for temporary use or backward compatibility
+    @SuppressWarnings("deprecation")
+    PasswordEncoder noopEncoder = NoOpPasswordEncoder.getInstance(); //NOSONAR
+    PasswordEncoder defaultEncoder = new LegacyPasswordEncoder();
+    Map<String, PasswordEncoder> encoders = new HashMap<>();
+    encoders.put("legacy", defaultEncoder);
+    encoders.put("bcrypt", new BCryptPasswordEncoder());
+    encoders.put("noop", noopEncoder);
+
+    DelegatingPasswordEncoder passworEncoder = new DelegatingPasswordEncoder(
+      "bcrypt",
+      encoders
+    );
+    passworEncoder.setDefaultPasswordEncoderForMatches(defaultEncoder);
+
+    return passworEncoder;
+  }
+
+  private Consumer<
+    List<AuthenticationProvider>
+  > configureAuthenticationValidator() {
+    return authenticationProviders ->
+      authenticationProviders.forEach(authenticationProvider -> {
+        if (
+          authenticationProvider instanceof
+          OAuth2AuthorizationCodeRequestAuthenticationProvider oauth2AuthorizationCodeRequestAuthenticationProvider
+        ) {
+          Consumer<
+            OAuth2AuthorizationCodeRequestAuthenticationContext
+          > authenticationValidator = new AuthenticationValidator()
+            .andThen(
+              OAuth2AuthorizationCodeRequestAuthenticationValidator.DEFAULT_SCOPE_VALIDATOR
+            );
+
+          oauth2AuthorizationCodeRequestAuthenticationProvider.setAuthenticationValidator(
+            authenticationValidator
+          );
+        }
+      });
+  }
+
+  static class AuthenticationValidator
+    implements Consumer<OAuth2AuthorizationCodeRequestAuthenticationContext> {
+
+    @Override
+    public void accept(
+      OAuth2AuthorizationCodeRequestAuthenticationContext authenticationContext
+    ) {
+      OAuth2AuthorizationCodeRequestAuthenticationToken authorizationCodeRequestAuthentication =
+        authenticationContext.getAuthentication();
+      RegisteredClient registeredClient =
+        authenticationContext.getRegisteredClient();
+      String requestedRedirectUri =
+        authorizationCodeRequestAuthentication.getRedirectUri();
+
+      if (!registeredClient.getRedirectUris().contains(requestedRedirectUri)) {
+        OAuth2Error error = new OAuth2Error(OAuth2ErrorCodes.INVALID_REQUEST);
+        throw new OAuth2AuthorizationCodeRequestAuthenticationException(
+          error,
+          null
+        );
+      }
+    }
+  }
+
+  @Profile({ "local", "deval", "test", "dev" })
+  @Bean
+  CorsConfigurationSource corsConfigurationSource() {
+    UrlBasedCorsConfigurationSource source =
+      new UrlBasedCorsConfigurationSource();
+    CorsConfiguration config = new CorsConfiguration();
+
+    if (Objects.nonNull(corsProperties.getAllowedHeaders())) {
+      config.setAllowedHeaders(corsProperties.getAllowedHeaders());
+    } else {
+      config.addAllowedHeader("*");
+    }
+    if (Objects.nonNull(corsProperties.getAllowedMethods())) {
+      config.setAllowedMethods(corsProperties.getAllowedMethods());
+    } else {
+      config.addAllowedMethod("*");
+    }
+    if (Objects.nonNull(corsProperties.getAllowedOrigins())) {
+      config.setAllowedOrigins(corsProperties.getAllowedOrigins());
+    } else {
+      config.addAllowedOrigin("http://localhost:4200");
+      config.addAllowedOrigin("http://172.18.151.139");
+      config.addAllowedOrigin("https://172.18.151.139");
+      config.addAllowedOrigin("https://grudevapp1.coforge.co");
+    }
+    source.registerCorsConfiguration("/**", config);
+    return source;
+  }
+}
+..........AuthServerSecurityConfig class
+
+package cargo.cms.auth.config;
+
+import org.springframework.context.annotation.Bean;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
+
+@Configuration
+public class AuthServerSettingsConfig {
+
+  @Bean
+  AuthorizationServerSettings authorizationServerSettings() {
+    return AuthorizationServerSettings.builder()
+      .multipleIssuersAllowed(true)
+      .build();
+  }
+}
+..................AuthServerSettingsConfig class
+
+package cargo.cms.auth.config;
+
+import jakarta.servlet.FilterChain;
+
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+final class CsrfCookieFilter extends OncePerRequestFilter {
+
+  @Override
+  protected void doFilterInternal(
+    HttpServletRequest request,
+    HttpServletResponse response,
+    FilterChain filterChain
+  ) throws ServletException, IOException {
+    CsrfToken csrfToken = (CsrfToken) request.getAttribute("_csrf");
+    // Render the token value to a cookie by causing the deferred token to be loaded
+    csrfToken.getToken();
+
+    filterChain.doFilter(request, response);
+  }
+}
+..............CsrfCookieFilter class
+
+package cargo.cms.auth.config;
+
+import cargo.cms.auth.model.AuthUserDetails;
+
+import cargo.cms.auth.user.UserInfoService;
+import java.util.Collections;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.oauth2.core.oidc.OidcUserInfo;
+import org.springframework.security.oauth2.core.oidc.endpoint.OidcParameterNames;
+import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
+import org.springframework.security.oauth2.server.authorization.token.JwtEncodingContext;
+import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenCustomizer;
+
+@Configuration
+public class JwtTokenConfig {
+
+  private final UserInfoService userInfoService;
+
+  public JwtTokenConfig(UserInfoService userInfoService) {
+    this.userInfoService = userInfoService;
+  }
+
+  @Bean
+  OAuth2TokenCustomizer<JwtEncodingContext> jwtTokenCustomizer() {
+    return context -> {
+      if (
+        OidcParameterNames.ID_TOKEN.equals(context.getTokenType().getValue())
+      ) {
+        OidcUserInfo userInfo = new OidcUserInfo(
+          userInfoService.loadUser(context.getPrincipal().getName())
+        );
+        context
+          .getClaims()
+          .claims(claims -> claims.putAll(userInfo.getClaims()));
+      }
+      if (OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
+        context
+          .getClaims()
+          .claims(claims -> {
+            if (
+              context.getPrincipal().getPrincipal() instanceof
+              AuthUserDetails userDetails
+            ) {
+              claims.putIfAbsent("userType", userDetails.getUserType());
+              claims.putIfAbsent("carrierCode", userDetails.getCarrierCode());
+              claims.putIfAbsent("companyName", userDetails.getCompanyName());
+              claims.putIfAbsent(
+                "groupCarrierCodes",
+                userDetails.getGroupCarrierCodes()
+              );
+              Set<String> roles = AuthorityUtils.authorityListToSet(
+                context.getPrincipal().getAuthorities()
+              )
+                .stream()
+                .map(c -> c.replaceFirst("^ROLE_", ""))
+                .collect(
+                  Collectors.collectingAndThen(
+                    Collectors.toSet(),
+                    Collections::unmodifiableSet
+                  )
+                );
+              claims.put("roles", roles);
+            }
+          });
+      }
+    };
+  }
+}
+......................JwtTokenConfig class
+
+package cargo.cms.auth.config;
+
+import jakarta.servlet.http.HttpServletRequest;
+
+import jakarta.servlet.http.HttpServletResponse;
+import java.util.function.Supplier;
+import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+import org.springframework.security.web.csrf.CsrfTokenRequestHandler;
+import org.springframework.security.web.csrf.XorCsrfTokenRequestAttributeHandler;
+import org.springframework.util.StringUtils;
+
+final class SpaCsrfTokenRequestHandler
+  extends CsrfTokenRequestAttributeHandler {
+
+  private final CsrfTokenRequestHandler delegate =
+    new XorCsrfTokenRequestAttributeHandler();
+
+  @Override
+  public void handle(
+    HttpServletRequest request,
+    HttpServletResponse response,
+    Supplier<CsrfToken> csrfToken
+  ) {
+    /*
+     * Always use XorCsrfTokenRequestAttributeHandler to provide BREACH protection of
+     * the CsrfToken when it is rendered in the response body.
+     */
+    this.delegate.handle(request, response, csrfToken);
+  }
+
+  @Override
+  public String resolveCsrfTokenValue(
+    HttpServletRequest request,
+    CsrfToken csrfToken
+  ) {
+    /*
+     * If the request contains a request header, use CsrfTokenRequestAttributeHandler
+     * to resolve the CsrfToken. This applies when a single-page application includes
+     * the header value automatically, which was obtained via a cookie containing the
+     * raw CsrfToken.
+     */
+    if (StringUtils.hasText(request.getHeader(csrfToken.getHeaderName()))) {
+      return super.resolveCsrfTokenValue(request, csrfToken);
+    }
+    /*
+     * In all other cases (e.g. if the request contains a request parameter), use
+     * XorCsrfTokenRequestAttributeHandler to resolve the CsrfToken. This applies
+     * when a server-side rendered form includes the _csrf request parameter as a
+     * hidden input.
+     */
+    return this.delegate.resolveCsrfTokenValue(request, csrfToken);
+  }
+}
+..............SpaCsrfTokenRequestHandler class
+
+<!doctype html>
+<html lang="en" class="scroll-smooth focus:scroll-auto" xmlns:th="http://www.thymeleaf.org">
+
+<head>
+	<meta charset="utf-8" />
+	<title>Home | CMS+</title>
+	<base th:href="@{/}" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<link rel="icon" type="image/x-icon" th:href="@{/favicon.ico}" />
+	<link rel="preconnect" href="https://fonts.gstatic.com" />
+	<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet" />
+	<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
+	<link rel="stylesheet" th:href="@{/css/style.css}" />
+	<script th:src="@{/js/main.js}" defer></script>
+</head>
+
+<body class="bg-gray-100 dark:bg-gray-900">
+	<div class="flex h-screen flex-col">
+		<header class="w-full flex flex-row">
+			<nav class="z-50 w-full border-b border-gray-300 bg-gray-200 p-2 dark:border-gray-700 dark:bg-gray-800"
+				aria-label="Navbar">
+				<div class="flex flex-wrap items-center justify-between">
+					<div class="flex items-center justify-start">
+						<a th:href="@{/}" class="mr-1 flex items-center justify-between">
+							<img th:src="@{/assets/images/logo.png}" class="mr-1 h-8 dark:hidden block" alt="GRU Logo" />
+							<img th:src="@{/assets/images/logo-dark.png}" class="mr-1 hidden h-8 dark:block" alt="GRU Logo" />
+							<span class="self-center whitespace-nowrap text-2xl font-semibold dark:text-white">CMS+</span>
+						</a>
+					</div>
+					<div class="flex items-center lg:order-2">
+            <button
+              type="button"
+              data-dropdown-toggle="language-dropdown-menu"
+              class="ml-1 hidden cursor-pointer rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:ring-4 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white dark:focus:ring-gray-600 lg:inline-flex lg:items-center"
+            >
+              <svg
+                aria-hidden="true"
+                class="h-6 w-6"
+                fill="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="m13 19 3.5-9 3.5 9m-6.125-2h5.25M3 7h7m0 0h2m-2 0c0 1.63-.793 3.926-2.239 5.655M7.5 6.818V5m.261 7.655C6.79 13.82 5.521 14.725 4 15m3.761-2.345L5 10m2.761 2.655L10.2 15"
+                />
+              </svg>
+              English (US)
+            </button>
+            <div
+              class="z-50 my-4 hidden list-none divide-y divide-gray-100 rounded-xl bg-white text-base shadow dark:divide-gray-600 dark:bg-gray-700"
+              id="language-dropdown-menu"
+            >
+              <ul class="py-1 text-gray-700 dark:text-gray-300" aria-labelledby="dropdown">
+                <li>
+                  <a
+                    href="#"
+                    class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-600 dark:hover:text-white"
+                    role="menuitem"
+                  >
+                    <div class="inline-flex items-center">English (US)</div>
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="#"
+                    class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-600 dark:hover:text-white"
+                    role="menuitem"
+                  >
+                    <div class="inline-flex items-center">Português (BR)</div>
+                  </a>
+                </li>
+              </ul>
+              <ul class="py-1 text-gray-700 dark:text-gray-300" aria-labelledby="dropdown">
+                <li>
+                  <a
+                    href="#"
+                    class="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                    >Language Settings</a
+                  >
+                </li>
+              </ul>
+            </div>
+            <button
+              type="button"
+              data-dropdown-toggle="notification-dropdown"
+              class="ml-1 rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:ring-4 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white dark:focus:ring-gray-600"
+            >
+              <span class="sr-only">View notifications</span>
+              <svg
+                aria-hidden="true"
+                class="h-6 w-6"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"
+                ></path>
+              </svg>
+            </button>
+            <div
+              class="z-50 my-4 hidden max-w-sm list-none divide-y divide-gray-100 overflow-hidden rounded-xl bg-white text-base shadow-lg dark:divide-gray-600 dark:bg-gray-700"
+              id="notification-dropdown"
+            >
+              <div
+                class="block bg-gray-50 px-4 py-2 text-center text-base font-medium text-gray-700 dark:bg-gray-600 dark:text-gray-300"
+              >
+                Notifications
+              </div>
+              <div>
+                <a href="#" class="flex border-b px-4 py-3 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-600">
+                  <div class="flex-shrink-0">
+                    <svg
+                      class="h-11 w-11 rounded-full text-gray-800 dark:text-white"
+                      aria-hidden="true"
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="24"
+                      height="24"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke="currentColor"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M12 5.464V3.099m0 2.365a5.338 5.338 0 0 1 5.133 5.368v1.8c0 2.386 1.867 2.982 1.867 4.175C19 17.4 19 18 18.462 18H5.538C5 18 5 17.4 5 16.807c0-1.193 1.867-1.789 1.867-4.175v-1.8A5.338 5.338 0 0 1 12 5.464ZM6 5 5 4M4 9H3m15-4 1-1m1 5h1M8.54 18a3.48 3.48 0 0 0 6.92 0H8.54Z"
+                      />
+                    </svg>
+                    <div
+                      class="absolute -mt-5 ml-6 flex h-5 w-5 items-center justify-center rounded-full border border-white bg-gray-900 dark:border-gray-700"
+                    >
+                      <svg
+                        aria-hidden="true"
+                        class="h-3 w-3 text-white"
+                        fill="currentColor"
+                        viewBox="0 0 20 20"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 016 6H2a6 6 0 016-6zM16 7a1 1 0 10-2 0v1h-1a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1V7z"
+                        ></path>
+                      </svg>
+                    </div>
+                  </div>
+                  <div class="w-full pl-3">
+                    <div class="mb-1.5 text-sm font-normal text-gray-500 dark:text-gray-400">
+                      Your personal certificate is
+                      <span class="font-semibold text-gray-900 dark:text-white">expiring in one month</span>
+                    </div>
+                    <div class="text-primaryLight-600 dark:text-primaryDark-500 text-xs font-medium">
+                      a few moments ago
+                    </div>
+                  </div>
+                </a>
+                <a href="#" class="flex border-b px-4 py-3 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-600">
+                  <div class="flex-shrink-0">
+                    <svg
+                      class="h-11 w-11 rounded-full text-gray-800 dark:text-white"
+                      aria-hidden="true"
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="24"
+                      height="24"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke="currentColor"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M12 5.464V3.099m0 2.365a5.338 5.338 0 0 1 5.133 5.368v1.8c0 2.386 1.867 2.982 1.867 4.175C19 17.4 19 18 18.462 18H5.538C5 18 5 17.4 5 16.807c0-1.193 1.867-1.789 1.867-4.175v-1.8A5.338 5.338 0 0 1 12 5.464ZM6 5 5 4M4 9H3m15-4 1-1m1 5h1M8.54 18a3.48 3.48 0 0 0 6.92 0H8.54Z"
+                      />
+                    </svg>
+                    <div
+                      class="absolute -mt-5 ml-6 flex h-5 w-5 items-center justify-center rounded-full border border-white bg-gray-900 dark:border-gray-700"
+                    >
+                      <svg
+                        aria-hidden="true"
+                        class="h-3 w-3 text-white"
+                        fill="currentColor"
+                        viewBox="0 0 20 20"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 016 6H2a6 6 0 016-6zM16 7a1 1 0 10-2 0v1h-1a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1V7z"
+                        ></path>
+                      </svg>
+                    </div>
+                  </div>
+                  <div class="w-full pl-3">
+                    <div class="mb-1.5 text-sm font-normal text-gray-500 dark:text-gray-400">
+                      Your personal certificate is
+                      <span class="font-semibold text-gray-900 dark:text-white">expiring in one month</span>
+                    </div>
+                    <div class="text-primaryLight-600 dark:text-primaryDark-500 text-xs font-medium">
+                      a few moments ago
+                    </div>
+                  </div>
+                </a>
+              </div>
+              <a
+                href="#"
+                class="text-md block bg-gray-50 py-2 text-center font-medium text-gray-900 hover:bg-gray-100 dark:bg-gray-600 dark:text-white dark:hover:underline"
+              >
+                <div class="inline-flex items-center">
+                  <svg
+                    aria-hidden="true"
+                    class="mr-2 h-4 w-4 text-gray-500 dark:text-gray-400"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path d="M10 12a2 2 0 100-4 2 2 0 000 4z"></path>
+                    <path
+                      fill-rule="evenodd"
+                      d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z"
+                      clip-rule="evenodd"
+                    ></path>
+                  </svg>
+                  View all
+                </div>
+              </a>
+            </div>
+            <button
+              type="button"
+              data-dropdown-toggle="links-dropdown"
+              class="ml-1 hidden rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:ring-4 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white dark:focus:ring-gray-600 lg:block"
+            >
+              <span class="sr-only">View links</span>
+              <svg class="h-6 w-6" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                <path
+                  d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
+                ></path>
+              </svg>
+            </button>
+            <div
+              class="z-50 my-4 hidden max-w-sm list-none divide-y divide-gray-100 overflow-hidden rounded rounded-xl bg-white text-base shadow-lg dark:divide-gray-600 dark:bg-gray-700"
+              id="links-dropdown"
+            >
+              <div
+                class="block bg-gray-50 px-4 py-2 text-center text-base font-medium text-gray-700 dark:bg-gray-600 dark:text-gray-300"
+              >
+                Links
+              </div>
+              <div class="grid grid-cols-3 gap-4 p-4">
+                <a href="#" class="group block rounded-lg p-4 text-center hover:bg-gray-100 dark:hover:bg-gray-600">
+                  <svg
+                    aria-hidden="true"
+                    class="mx-auto mb-1 h-7 w-7 text-gray-400 group-hover:text-gray-500 dark:text-gray-400 dark:group-hover:text-gray-400"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      fill-rule="evenodd"
+                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-6-3a2 2 0 11-4 0 2 2 0 014 0zm-2 4a5 5 0 00-4.546 2.916A5.986 5.986 0 0010 16a5.986 5.986 0 004.546-2.084A5 5 0 0010 11z"
+                      clip-rule="evenodd"
+                    ></path>
+                  </svg>
+                  <div class="text-sm text-gray-900 dark:text-white">Profile</div>
+                </a>
+                <a href="#" class="group block rounded-lg p-4 text-center hover:bg-gray-100 dark:hover:bg-gray-600">
+                  <svg
+                    aria-hidden="true"
+                    class="mx-auto mb-1 h-7 w-7 text-gray-400 group-hover:text-gray-500 dark:text-gray-400 dark:group-hover:text-gray-400"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      fill-rule="evenodd"
+                      d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
+                      clip-rule="evenodd"
+                    ></path>
+                  </svg>
+                  <div class="text-sm text-gray-900 dark:text-white">Settings</div>
+                </a>
+                <a href="#" class="group block rounded-lg p-4 text-center hover:bg-gray-100 dark:hover:bg-gray-600">
+                  <svg
+                    aria-hidden="true"
+                    class="mx-auto mb-1 h-7 w-7 text-gray-400 group-hover:text-gray-500 dark:text-gray-400 dark:group-hover:text-gray-400"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"
+                    ></path>
+                  </svg>
+                  <div class="text-sm text-gray-900 dark:text-white">Sign Out</div>
+                </a>
+              </div>
+            </div>
+						<button id="theme-toggle" type="button"
+							class="ml-1 rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:ring-4 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-400 dark:focus:ring-gray-600">
+							<span class="sr-only">Toggle theme</span>
+							<svg id="theme-toggle-dark-icon" class="hidden h-6 w-6" fill="currentColor" viewBox="0 0 20 20"
+								xmlns="http://www.w3.org/2000/svg">
+								<path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path>
+							</svg>
+							<svg id="theme-toggle-light-icon" class="hidden h-6 w-6" fill="currentColor" viewBox="0 0 20 20"
+								xmlns="http://www.w3.org/2000/svg">
+								<path
+									d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
+									fill-rule="evenodd" clip-rule="evenodd"></path>
+							</svg>
+						</button>
+          <button
+            type="button"
+            class="ml-1 rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:ring-4 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white dark:focus:ring-gray-600"
+            id="user-menu-button"
+            aria-expanded="false"
+            data-dropdown-toggle="user-menu-dropdown"
+          >
+            <span class="sr-only">Open user menu</span>
+            <svg
+              class="h-6 w-6"
+              aria-hidden="true"
+              xmlns="http://www.w3.org/2000/svg"
+              width="24"
+              height="24"
+              fill="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                fill-rule="evenodd"
+                d="M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm-2 9a4 4 0 0 0-4 4v1a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-1a4 4 0 0 0-4-4h-4Z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </button>
+          <div
+            class="z-50 my-4 hidden w-56 list-none divide-y divide-gray-100 rounded-xl bg-white text-base shadow dark:divide-gray-600 dark:bg-gray-700"
+            id="user-menu-dropdown"
+          >
+            <div class="px-4 py-3">
+              <span class="block text-sm font-semibold text-gray-900 dark:text-white">CMS+ Web Demo User</span>
+              <span class="block truncate text-sm text-gray-900 dark:text-white">demo.user.t</span>
+            </div>
+            <ul class="py-1 text-gray-700 dark:text-gray-300" aria-labelledby="dropdown">
+              <li>
+                <a
+                  href="#"
+                  class="block px-4 py-2 text-sm hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-600 dark:hover:text-white"
+                  >Account settings</a
+                >
+              </li>
+            </ul>
+            <ul class="py-1 text-gray-700 dark:text-gray-300" aria-labelledby="dropdown">
+              <li>
+                <a
+                  href="#"
+                  class="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                  >Sign out</a
+                >
+              </li>
+            </ul>
+          </div>
+					</div>
+				</div>
+			</nav>
+		</header>
+
+		<main class="w-full flex-auto overflow-y-auto p-3 text-gray-500 dark:text-gray-400">
+			<div class="w-full">
+
+				<section class="bg-gray-50 dark:bg-gray-900">
+          <h3>Home</h3>
+				</section>
+			</div>
+		</main>
+
+		<footer
+			class="w-full z-50 flex h-9 items-center justify-between border-t border-gray-300 bg-gray-200 p-2 shadow dark:border-gray-700 dark:bg-gray-800">
+			<ul class="flex flex-wrap items-center text-sm font-medium text-gray-500 dark:text-gray-400">
+				<li>
+					<a href="https://www.gru.com.br/" class="me-4 hover:underline" target="_blank"
+						rel="noopener noreferrer">GRU</a>
+				</li>
+			</ul>
+		</footer>
+	</div>
+</body>
+
+</html>
+............index.html
+
+<!doctype html>
+<html lang="en" class="scroll-smooth focus:scroll-auto" xmlns:th="http://www.thymeleaf.org">
+
+<head>
+	<meta charset="utf-8" />
+	<title>Login | CMS+</title>
+	<base th:href="@{/}" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<link rel="icon" type="image/x-icon" th:href="@{/favicon.ico}" />
+	<link rel="preconnect" href="https://fonts.gstatic.com" />
+	<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet" />
+	<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
+	<link rel="stylesheet" th:href="@{/css/style.css}" />
+	<script th:src="@{/js/main.js}" defer></script>
+</head>
+
+<body class="bg-gray-100 dark:bg-gray-900">
+	<div class="flex h-screen flex-col">
+		<header class="fixed left-0 top-0 w-full flex flex-row">
+			<nav class="z-50 w-full border-b border-gray-300 bg-gray-200 p-2 dark:border-gray-700 dark:bg-gray-800"
+				aria-label="Navbar">
+				<div class="flex flex-wrap items-center justify-between">
+					<div class="flex items-center justify-start">
+						<a th:href="@{/}" class="mr-1 flex items-center justify-between">
+							<img th:src="@{/assets/images/logo.png}" class="mr-1 h-8 dark:hidden block" alt="GRU Logo" />
+							<img th:src="@{/assets/images/logo-dark.png}" class="mr-1 hidden h-8 dark:block" alt="GRU Logo" />
+							<span class="self-center whitespace-nowrap text-2xl font-semibold dark:text-white">CMS+</span>
+						</a>
+					</div>
+					<div class="flex items-center lg:order-2">
+            <button
+              type="button"
+              data-dropdown-toggle="language-dropdown-menu"
+              class="ml-1 hidden cursor-pointer rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:ring-4 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white dark:focus:ring-gray-600 lg:inline-flex lg:items-center"
+            >
+              <svg
+                aria-hidden="true"
+                class="h-6 w-6"
+                fill="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="m13 19 3.5-9 3.5 9m-6.125-2h5.25M3 7h7m0 0h2m-2 0c0 1.63-.793 3.926-2.239 5.655M7.5 6.818V5m.261 7.655C6.79 13.82 5.521 14.725 4 15m3.761-2.345L5 10m2.761 2.655L10.2 15"
+                />
+              </svg>
+              English (US)
+            </button>
+            <div
+              class="z-50 my-4 hidden list-none divide-y divide-gray-100 rounded-xl bg-white text-base shadow dark:divide-gray-600 dark:bg-gray-700"
+              id="language-dropdown-menu"
+            >
+              <ul class="py-1 text-gray-700 dark:text-gray-300" aria-labelledby="dropdown">
+                <li>
+                  <a
+                    href="#"
+                    class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-600 dark:hover:text-white"
+                    role="menuitem"
+                  >
+                    <div class="inline-flex items-center">English (US)</div>
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="#"
+                    class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-600 dark:hover:text-white"
+                    role="menuitem"
+                  >
+                    <div class="inline-flex items-center">Português (BR)</div>
+                  </a>
+                </li>
+              </ul>
+              <ul class="py-1 text-gray-700 dark:text-gray-300" aria-labelledby="dropdown">
+                <li>
+                  <a
+                    href="#"
+                    class="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                    >Language Settings</a
+                  >
+                </li>
+              </ul>
+            </div>
+
+						<button id="theme-toggle" type="button"
+							class="ml-1 rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:ring-4 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-400 dark:focus:ring-gray-600">
+							<span class="sr-only">Toggle theme</span>
+							<svg id="theme-toggle-dark-icon" class="hidden h-6 w-6" fill="currentColor" viewBox="0 0 20 20"
+								xmlns="http://www.w3.org/2000/svg">
+								<path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path>
+							</svg>
+							<svg id="theme-toggle-light-icon" class="hidden h-6 w-6" fill="currentColor" viewBox="0 0 20 20"
+								xmlns="http://www.w3.org/2000/svg">
+								<path
+									d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
+									fill-rule="evenodd" clip-rule="evenodd"></path>
+							</svg>
+						</button>
+					</div>
+				</div>
+			</nav>
+		</header>
+
+		<main class="w-full flex-auto overflow-y-auto text-gray-500 dark:text-gray-400">
+			<div class="w-full">
+
+				<section class="bg-gray-50 dark:bg-gray-900">
+					<div class="mx-auto flex flex-col items-center justify-center px-6 py-24 md:h-screen lg:py-0">
+						<a th:href="@{/}" class="mb-6 flex items-center text-2xl font-semibold text-gray-900 dark:text-white"> CMS+
+						</a>
+						<div
+							class="w-full rounded-lg bg-white shadow dark:border dark:border-gray-700 dark:bg-gray-800 sm:max-w-md md:mt-0 xl:p-0">
+							<div class="space-y-4 p-6 sm:p-8 md:space-y-6">
+								<h1 class="text-xl font-bold leading-tight tracking-tight text-gray-900 dark:text-white md:text-2xl">
+									Sign in to your account
+								</h1>
+                <div th:if="${param.error}" class="mb-4 text-sm text-red-800 rounded-lg bg-red-50 dark:bg-gray-800 dark:text-red-400" role="alert">
+                  Invalid username and password.
+                </div>
+                <div th:if="${param.logout}" class="mb-4 text-sm text-yellow-800 rounded-lg bg-yellow-50 dark:bg-gray-800 dark:text-yellow-300" role="alert">
+                  You have been logged out.
+                </div>
+								<form class="space-y-4 md:space-y-6" th:action="@{/login}" method="post">
+									<div>
+										<label for="username" class="mb-2 block text-sm font-medium text-gray-900 dark:text-white">Your
+											username</label>
+										<input type="text" name="username" id="username"
+											class="block w-full rounded-lg border border-gray-300 bg-gray-50 p-2.5 text-gray-900 focus:border-primary-600 focus:ring-primary-600 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 dark:focus:border-primary-dark-500 dark:focus:ring-primary-dark-500 sm:text-sm"
+											placeholder="username" required="" />
+									</div>
+									<div>
+										<label for="password"
+											class="mb-2 block text-sm font-medium text-gray-900 dark:text-white">Password</label>
+										<input type="password" name="password" id="password" placeholder="••••••••"
+											class="block w-full rounded-lg border border-gray-300 bg-gray-50 p-2.5 text-gray-900 focus:border-primary-600 focus:ring-primary-600 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 dark:focus:border-primary-dark-500 dark:focus:ring-primary-dark-500 sm:text-sm"
+											required="" />
+									</div>
+									<div class="flex items-center justify-between">
+										<a href="#"
+											class="text-sm font-medium text-primary-600 hover:underline dark:text-primary-dark-500 hidden">Forgot
+											password?</a>
+									</div>
+									<button type="submit"
+										class="w-full rounded-lg bg-primary-600 px-5 py-2.5 text-center text-sm font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-300 dark:bg-primary-dark-600 dark:hover:bg-primary-dark-700 dark:focus:ring-primary-dark-800">
+										Sign in
+									</button>
+								</form>
+							</div>
+						</div>
+					</div>
+				</section>
+			</div>
+		</main>
+
+		<footer
+			class="fixed left-0 bottom-0 w-full z-50 flex h-9 items-center justify-between border-t border-gray-300 bg-gray-200 p-2 shadow dark:border-gray-700 dark:bg-gray-800">
+			<ul class="flex flex-wrap items-center text-sm font-medium text-gray-500 dark:text-gray-400">
+				<li>
+					<a href="https://www.gru.com.br/" class="me-4 hover:underline" target="_blank"
+						rel="noopener noreferrer">GRU</a>
+				</li>
+			</ul>
+		</footer>
+	</div>
+</body>
+
+</html>
+............login.html
+
+package cargo.cms.auth.user;
+
+import cargo.cms.base.model.BaseModel;
+
+import java.time.LocalDateTime;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+
+@Data
+@EqualsAndHashCode(callSuper = true)
+@AllArgsConstructor
+@NoArgsConstructor
+public class UserInfoModel extends BaseModel {
+
+  private static final long serialVersionUID = 1L;
+  private String subject;
+  private String name;
+  private String preferredUsername;
+  private String profile;
+  private String picture;
+  private String website;
+  private String email;
+  private String emailVerified;
+  private String zoneInfo;
+  private String locale;
+  private String phoneNumber;
+  private String phoneNumberVerified;
+  private LocalDateTime updatedOn;
+}
+................ UserInfoModel class
+
+
+package cargo.cms.auth.user;
+
+import cargo.cms.base.repository.BaseRepository;
+
+import org.apache.ibatis.session.SqlSession;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public class UserInfoRepository extends BaseRepository {
+
+  public UserInfoRepository(SqlSession sqlSession) {
+    super(sqlSession, "cargo.cms.auth.user.mapper.UserInfoMapper");
+  }
+
+  public UserInfoModel loadUser(String username) {
+    return fetchObject("loadUser", username);
+  }
+}
+.............UserInfoRepository class
+
+
+package cargo.cms.auth.user;
+
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
+import org.apache.commons.lang3.ObjectUtils;
+import org.springframework.security.oauth2.core.oidc.OidcUserInfo;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@Transactional(readOnly = true)
+public class UserInfoService {
+
+  private final UserInfoRepository userInfoRepository;
+
+  public UserInfoService(UserInfoRepository userInfoRepository) {
+    this.userInfoRepository = userInfoRepository;
+  }
+
+  public Map<String, Object> loadUser(String username) {
+    UserInfoModel userInfo = userInfoRepository.loadUser(username);
+    return OidcUserInfo.builder()
+      .subject(username)
+      .name(userInfo.getName())
+      .preferredUsername(userInfo.getPreferredUsername())
+      .email(userInfo.getEmail())
+      .zoneinfo(userInfo.getZoneInfo())
+      .locale(userInfo.getLocale())
+      .phoneNumber(userInfo.getPhoneNumber())
+      .updatedAt(
+        !ObjectUtils.isEmpty(userInfo.getUpdatedOn())
+          ? userInfo
+            .getUpdatedOn()
+            .atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ISO_DATE_TIME)
+          : null
+      )
+      .build()
+      .getClaims();
+  }
+}
+.............UserInfoRepository class
